@@ -11,6 +11,8 @@ int threads;
 int listenfd;
 int epollfd;
 const size_t EVENT_LEN = 10;
+int activefds = 1;
+int packets = 0;
 
 void *workerFn(void *param);
 
@@ -67,14 +69,26 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    for (i = 0; i < threads; ++i) {
-        pthread_join(tids[i], NULL);
+    int last = -1;
+    int lastPacket = -1;
+    while (1) {
+        sleep(1);
+        if (last != activefds || lastPacket != packets) {
+            printf("active: %d packets: %d\n", activefds, packets - lastPacket);
+        }
+        last = activefds;
+        lastPacket = packets;
     }
+    //for (i = 0; i < threads; ++i) {
+    //    pthread_join(tids[i], NULL);
+    //}
     return 0;
 }
 
 void add_new_fd(int fd)
 {
+    //printf("new %d %d\n", fd, pthread_self());
+    __sync_fetch_and_add(&activefds, 1);
     struct epoll_event event;
     event.events = EPOLLIN | EPOLLONESHOT;
     event.data.fd = fd;
@@ -97,6 +111,7 @@ void reenable_fd(int fd)
 
 void close_fd(int fd)
 {
+    __sync_fetch_and_add(&activefds, -1);
     epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, NULL);
     close(fd);
 }
@@ -105,8 +120,11 @@ void *workerFn(void *param)
 {
     while (1) {
         struct epoll_event events[EVENT_LEN];
-        int n = epoll_wait(epollfd, events, EVENT_LEN, 1000);
+        int n = epoll_wait(epollfd, events, EVENT_LEN, 10000);
         if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             perror("epoll_wait error");
             exit(1);
         }
@@ -130,13 +148,17 @@ void *workerFn(void *param)
                         close_fd(events[i].data.fd);
                         break;
                     } else if (n < 0) {
-                        if (errno == EAGAIN || errno == EINTR) {
+                        if (errno == EINTR) {
                             continue;
+                        } else if (errno == EAGAIN) {
+                            break;
                         } else {
                             reenable = 0;
                             close_fd(events[i].data.fd);
+                            break;
                         }
                     } else {
+                        __sync_fetch_and_add(&packets, 1);
                         int pos = 0;
                         while (pos < n) {
                             int sent = send(events[i].data.fd, buf+pos, n-pos, 0);
@@ -149,6 +171,9 @@ void *workerFn(void *param)
                             reenable = 0;
                             close_fd(events[i].data.fd);
                         }
+                    }
+                    if (n < sizeof(buf)) {
+                        break;
                     }
                 }
             }
