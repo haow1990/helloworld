@@ -22,6 +22,8 @@ int main(int argc, char **argv)
         perror("cannot create socket");
         return 1;
     }
+    int on = 1;
+    setsockopt(servfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     if (bind(servfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) != 0) {
         perror("cannot bind");
         return 1;
